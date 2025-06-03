@@ -1,9 +1,11 @@
+// benches/sync_example.rs
+
 use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite,
   AbstractCombination, MatrixCellValue,
 };
 use criterion::{criterion_group, criterion_main, AxisScale, Criterion, PlotConfiguration, Throughput};
-use rand::{prelude::*, rng};
+use rand::prelude::*;
 use std::{
   sync::atomic::{AtomicUsize, Ordering},
   thread,
@@ -13,17 +15,15 @@ use std::{
 // --- Configuration for Sync Benchmarks ---
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncAlgorithm {
-  // Made public
   SortData,
   ProcessData,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConfigSync {
-  // Made public
   pub algorithm: SyncAlgorithm,
   pub data_elements: usize,
-  pub intensity: String,
+  pub intensity: String, // Keep as String if "Low", "Medium" are actual values
 }
 
 #[derive(Debug, Default)]
@@ -38,15 +38,16 @@ struct SyncState {
 
 static SYNC_GLOBAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+// Extractor now expects raw values since names are handled by the library for group IDs
 fn extract_sync_config(combo: &AbstractCombination) -> Result<ConfigSync, String> {
-  let algo_str = combo.get_tag(0)?;
+  let algo_str = combo.get_tag(0)?; // Assuming first axis is Tag("Sort") or Tag("Process")
   let algorithm = match algo_str {
     "Sort" => SyncAlgorithm::SortData,
     "Process" => SyncAlgorithm::ProcessData,
     _ => return Err(format!("Unknown sync algorithm type: {}", algo_str)),
   };
-  let data_elements = combo.get_u64(1)? as usize;
-  let intensity = combo.get_string(2)?.to_string();
+  let data_elements = combo.get_u64(1)? as usize; // Second axis is Unsigned for data_elements
+  let intensity = combo.get_string(2)?.to_string(); // Third axis is String for intensity
 
   Ok(ConfigSync {
     algorithm,
@@ -54,6 +55,12 @@ fn extract_sync_config(combo: &AbstractCombination) -> Result<ConfigSync, String
     intensity,
   })
 }
+
+// --- Global, Setup, Logic, Teardown functions (sync_global_setup, etc.) ---
+// These remain largely the same as in your original sync.rs,
+// ensure they match the function signatures required by SyncBenchmarkSuite.
+// For brevity, I'll skip re-pasting them if they are unchanged in core logic.
+// Just ensure `sync_setup_fn` and `sync_benchmark_logic_fn` use `ConfigSync`.
 
 fn sync_global_setup(cfg: &ConfigSync) -> Result<(), String> {
   println!(
@@ -66,8 +73,8 @@ fn sync_global_setup(cfg: &ConfigSync) -> Result<(), String> {
 
 fn sync_setup_fn(cfg: &ConfigSync) -> Result<(SyncContext, SyncState), String> {
   thread::sleep(Duration::from_micros(20));
-  let mut rng = rng();
-  let dataset: Vec<u64> = (0..cfg.data_elements).map(|_| rng.gen_range(0..100_000)).collect();
+  let mut local_rng = rand::rng();
+  let dataset: Vec<u64> = (0..cfg.data_elements).map(|_| local_rng.random_range(0..100_000)).collect();
   let aux_buffer = vec![0; cfg.data_elements];
   Ok((SyncContext::default(), SyncState { dataset, aux_buffer }))
 }
@@ -105,7 +112,7 @@ fn sync_benchmark_logic_fn(
     }
   }
   let duration = start_time.elapsed();
-  ctx.items_processed_in_batch += 1;
+  ctx.items_processed_in_batch += state.dataset.len(); // Example: count elements if relevant
   (ctx, state, duration)
 }
 
@@ -122,41 +129,55 @@ fn sync_global_teardown(cfg: &ConfigSync) -> Result<(), String> {
   Ok(())
 }
 
+
 // This function will be called by the main benchmark runner
-pub fn benchmark_sync_suite(c: &mut Criterion) {
+pub fn benchmark_sync_suite_named(c: &mut Criterion) {
   let parameter_axes = vec![
+    // Axis 0: Algorithm type
     vec![
       MatrixCellValue::Tag("Sort".to_string()),
       MatrixCellValue::Tag("Process".to_string()),
     ],
-    vec![MatrixCellValue::Unsigned(100), MatrixCellValue::Unsigned(500)], // data_elements
+    // Axis 1: Number of data elements
+    vec![MatrixCellValue::Unsigned(100), MatrixCellValue::Unsigned(500)],
+    // Axis 2: Intensity
     vec![
       MatrixCellValue::String("Low".to_string()),
       MatrixCellValue::String("Medium".to_string()),
-    ], // intensity
+      // MatrixCellValue::String("High".to_string()), // Can add more intensity levels
+    ],
+  ];
+
+  // Define names for these axes
+  let parameter_names = vec![
+    "Algo".to_string(),       // Name for the first axis (Algorithm)
+    "Elements".to_string(), // Name for the second axis (Data Elements)
+    "Intensity".to_string(),// Name for the third axis (Intensity)
   ];
 
   let sync_suite = SyncBenchmarkSuite::new(
     c,
-    "SyncExampleFileSuite".to_string(), // Unique suite name
+    "SyncExampleSuite".to_string(),
+    None,
     parameter_axes,
     Box::new(extract_sync_config),
     sync_setup_fn,
     sync_benchmark_logic_fn,
     sync_teardown_fn,
   )
+  .parameter_names(parameter_names) // Set parameter names using the builder method
   .global_setup(sync_global_setup)
   .global_teardown(sync_global_teardown)
   .configure_criterion_group(|group| {
     group
       .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Linear))
-      .sample_size(15)
-      .measurement_time(Duration::from_secs(1));
+      .sample_size(15) // Adjusted from original example
+      .measurement_time(Duration::from_secs(2)); // Adjusted
   })
   .throughput(|cfg: &ConfigSync| Throughput::Elements(cfg.data_elements as u64));
 
   sync_suite.run();
 }
 
-criterion_group!(sync_benches, benchmark_sync_suite);
-criterion_main!(sync_benches);
+criterion_group!(sync_benches_named, benchmark_sync_suite_named);
+criterion_main!(sync_benches_named); // Ensure only one criterion_main if this is the only bench file being compiled

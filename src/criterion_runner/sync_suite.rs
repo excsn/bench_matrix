@@ -5,8 +5,7 @@ use crate::generator::generate_combinations;
 use crate::params::MatrixCellValue;
 
 use criterion::{
-  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration,
-  Throughput,
+  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput,
 };
 use std::fmt::Debug;
 use std::time::Duration;
@@ -21,6 +20,7 @@ pub type SyncTeardownFn<S, Cfg, CtxT> = fn(CtxT, S, &Cfg) -> ();
 pub struct SyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr = String, SetupErr = String> {
   criterion: &'s mut Criterion<WallTime>,
   suite_base_name: String,
+  parameter_names: Option<Vec<String>>,
   parameter_axes: Vec<Vec<MatrixCellValue>>,
   extractor_fn: ExtractorFn<Cfg, ExtErr>,
   global_setup_fn: Option<GlobalSetupFn<Cfg>>,
@@ -44,6 +44,7 @@ where
   pub fn new(
     criterion: &'s mut Criterion<WallTime>,
     suite_base_name: String,
+    parameter_names: Option<Vec<String>>,
     parameter_axes: Vec<Vec<MatrixCellValue>>,
     extractor_fn: ExtractorFn<Cfg, ExtErr>,
     setup_fn: SyncSetupFn<S, Cfg, CtxT, SetupErr>,
@@ -53,6 +54,7 @@ where
     Self {
       criterion,
       suite_base_name,
+      parameter_names,
       parameter_axes,
       extractor_fn,
       global_setup_fn: None,
@@ -63,6 +65,21 @@ where
       criterion_group_configurator: None,
       throughput_calculator: None,
     }
+  }
+
+  pub fn parameter_names(mut self, names: Vec<String>) -> Self {
+    if names.len() != self.parameter_axes.len() {
+      eprintln!(
+              "[BenchMatrix::Sync] [WARN] Suite '{}': Mismatch between number of parameter_names ({}) and parameter_axes ({}). Parameter names will be ignored for ID generation.",
+              self.suite_base_name,
+              names.len(),
+              self.parameter_axes.len()
+          );
+      self.parameter_names = None; // Or keep existing if it was already Some and valid
+    } else {
+      self.parameter_names = Some(names);
+    }
+    self
   }
 
   pub fn global_setup(mut self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self {
@@ -136,8 +153,12 @@ where
           continue;
         }
       }
-
-      let group_name = format!("{}{}", self.suite_base_name, abstract_combo.id_suffix());
+      let combo_id_suffix = if let Some(names) = &self.parameter_names {
+        abstract_combo.id_suffix_with_names(names)
+      } else {
+        abstract_combo.id_suffix() // Fallback to old method
+      };
+      let group_name = format!("{}{}", self.suite_base_name, combo_id_suffix);
       let mut group = self.criterion.benchmark_group(&group_name);
 
       if let Some(ref configurator) = self.criterion_group_configurator {

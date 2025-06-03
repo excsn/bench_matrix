@@ -3,7 +3,7 @@ use bench_matrix::{
   AbstractCombination, MatrixCellValue,
 };
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, Criterion, PlotConfiguration, Throughput};
-use rand::{prelude::*, rng};
+use rand::prelude::*;
 use std::{
   future::Future,
   pin::Pin,
@@ -15,14 +15,12 @@ use tokio::runtime::Runtime;
 // --- Configuration for Async Benchmarks ---
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AsyncWorkloadType {
-  // Made public if used by aggregator directly
   NetworkSim,
   DiskSim,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConfigAsync {
-  // Made public
   pub workload: AsyncWorkloadType,
   pub packet_size: u32,
   pub concurrent_ops: u16,
@@ -38,20 +36,18 @@ struct AsyncState {
   simulated_connections: Vec<String>,
 }
 
-// --- Helper: Global state (could be shared or specific to this module) ---
-// If shared across bench files, it would need to be in a common lib or `pub static` in one.
-// For this example, let's assume it's conceptually separate or managed by the aggregator.
 static ASYNC_GLOBAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+// Extractor function remains the same as it operates on AbstractCombination indices
 fn extract_async_config(combo: &AbstractCombination) -> Result<ConfigAsync, String> {
-  let workload_str = combo.get_tag(0)?;
+  let workload_str = combo.get_tag(0)?; // Corresponds to "WorkloadType" name
   let workload = match workload_str {
     "Network" => AsyncWorkloadType::NetworkSim,
     "Disk" => AsyncWorkloadType::DiskSim,
     _ => return Err(format!("Unknown async workload type: {}", workload_str)),
   };
-  let packet_size = combo.get_u64(1)? as u32;
-  let concurrent_ops = combo.get_u64(2)? as u16;
+  let packet_size = combo.get_u64(1)? as u32; // Corresponds to "PktSize" name
+  let concurrent_ops = combo.get_u64(2)? as u16; // Corresponds to "Concurrency" name
 
   Ok(ConfigAsync {
     workload,
@@ -62,7 +58,7 @@ fn extract_async_config(combo: &AbstractCombination) -> Result<ConfigAsync, Stri
 
 fn async_global_setup(cfg: &ConfigAsync) -> Result<(), String> {
   println!(
-    "[ASYNC GLOBAL SETUP] File: async_example.rs, Config: {:?}, Counter: {}",
+    "[ASYNC NAMED GLOBAL SETUP] Config: {:?}, Counter: {}",
     cfg,
     ASYNC_GLOBAL_COUNTER.fetch_add(1, Ordering::SeqCst)
   );
@@ -76,8 +72,8 @@ fn async_setup_fn(
   let cfg_clone = cfg.clone();
   Box::pin(async move {
     tokio::time::sleep(Duration::from_micros(10)).await;
-    let mut rng = rng();
-    let data_packet = (0..cfg_clone.packet_size).map(|_| rng.gen::<u8>()).collect();
+    let mut local_rng = StdRng::from_os_rng();
+    let data_packet = (0..cfg_clone.packet_size).map(|_| local_rng.gen::<u8>()).collect();
     let simulated_connections = (0..cfg_clone.concurrent_ops)
       .map(|i| format!("conn-{}-{:?}-{}", i, cfg_clone.workload, cfg_clone.packet_size))
       .collect();
@@ -108,12 +104,13 @@ fn async_benchmark_logic_fn(
     };
     if concurrent_ops > 0 {
       tokio::time::sleep(Duration::from_micros(delay_micros_per_op * concurrent_ops as u64)).await;
-    } else {
+    } else { // Handle case of 0 concurrent_ops if it means a single base operation
       tokio::time::sleep(Duration::from_micros(delay_micros_per_op)).await;
     }
     let _checksum = state.data_packet.iter().fold(0u8, |acc, &x| acc.wrapping_add(x));
     let duration = start_time.elapsed();
-    ctx.ops_this_iteration += 1;
+    // If concurrent_ops is 0, this logic might need adjustment depending on what ops_this_iteration tracks
+    ctx.ops_this_iteration += if concurrent_ops > 0 { concurrent_ops as u32} else { 1 };
     (ctx, state, duration)
   })
 }
@@ -131,7 +128,7 @@ fn async_teardown_fn(
 
 fn async_global_teardown(cfg: &ConfigAsync) -> Result<(), String> {
   println!(
-    "[ASYNC GLOBAL TEARDOWN] File: async_example.rs, Config: {:?}, Counter: {}",
+    "[ASYNC NAMED GLOBAL TEARDOWN] Config: {:?}, Counter: {}",
     cfg,
     ASYNC_GLOBAL_COUNTER.load(Ordering::SeqCst)
   );
@@ -139,25 +136,37 @@ fn async_global_teardown(cfg: &ConfigAsync) -> Result<(), String> {
 }
 
 // This function will be called by the main benchmark runner
-pub fn benchmark_async_suite(c: &mut Criterion) {
+pub fn benchmark_async_suite_named(c: &mut Criterion) {
   let rt = Runtime::new().expect("Failed to create Tokio runtime for async_example benchmarks");
-  println!("\n--- Running Async Benchmarks from async_example.rs ---");
+  println!("\n--- Running Async Named Benchmarks from async_named.rs ---");
 
+  // Define parameter axes
   let parameter_axes = vec![
+    // Axis 0: Workload Type
     vec![
       MatrixCellValue::Tag("Network".to_string()),
       MatrixCellValue::Tag("Disk".to_string()),
     ],
+    // Axis 1: Packet Size
     vec![MatrixCellValue::Unsigned(64), MatrixCellValue::Unsigned(512)],
+    // Axis 2: Concurrent Operations
     vec![MatrixCellValue::Unsigned(1), MatrixCellValue::Unsigned(4)],
+  ];
+
+  // Define names for these axes
+  let parameter_names = vec![
+    "WorkloadType".to_string(),
+    "PktSize".to_string(),
+    "Concurrency".to_string(),
   ];
 
   let async_suite = AsyncBenchmarkSuite::new(
     c,
-    &rt, // Pass reference to rt
-    "AsyncExampleFileSuite".to_string(),
+    &rt,
+    "AsyncNamedSuite".to_string(),  // Base name for the suite
+    Some(parameter_names),          // Pass the defined parameter names
     parameter_axes,
-    Box::new(extract_async_config),
+    Box::new(extract_async_config), // Extractor function remains the same
     async_setup_fn,
     async_benchmark_logic_fn,
     async_teardown_fn,
@@ -167,16 +176,22 @@ pub fn benchmark_async_suite(c: &mut Criterion) {
   .configure_criterion_group(|group: &mut BenchmarkGroup<'_, criterion::measurement::WallTime>| {
     group
       .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
-      .sample_size(10)
-      .measurement_time(Duration::from_secs(1));
+      .sample_size(10) // You might want to adjust this based on benchmark stability/duration
+      .measurement_time(Duration::from_secs(3)); // And this too
   })
-  .throughput(|_cfg: &ConfigAsync| {
-    // _cfg if not used, or use cfg.concurrent_ops
-    Throughput::Elements(1) // Or cfg.concurrent_ops as u64, etc.
+  .throughput(|cfg: &ConfigAsync| {
+    // Throughput can be based on concurrent_ops or total bytes processed, etc.
+    // If concurrent_ops can be 0, decide what Throughput::Elements(0) means or adjust.
+    // For now, let's assume concurrent_ops > 0 for throughput calculation.
+    if cfg.concurrent_ops > 0 {
+        Throughput::Elements(cfg.concurrent_ops as u64)
+    } else {
+        Throughput::Elements(1) // Default for single operation if concurrent_ops is 0
+    }
   });
 
   async_suite.run();
 }
 
-criterion_group!(async_benches, benchmark_async_suite);
-criterion_main!(async_benches);
+criterion_group!(async_benches_named, benchmark_async_suite_named);
+criterion_main!(async_benches_named);

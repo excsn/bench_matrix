@@ -107,15 +107,50 @@ impl AbstractCombination {
     let parts: Vec<String> = self
       .cells
       .iter()
-      .map(|cell| {
-        // More structured naming for the suffix
-        match cell {
+      .map(|cell| match cell {
+        MatrixCellValue::Tag(s) => s.clone(),
+        MatrixCellValue::String(s) => s.replace(|c: char| !c.is_alphanumeric(), "_"),
+        MatrixCellValue::Int(i) => format!("Int{}", i),
+        MatrixCellValue::Unsigned(u) => format!("Uint{}", u),
+        MatrixCellValue::Bool(b) => format!("Bool{}", b),
+      })
+      .collect();
+    if parts.is_empty() {
+      // Handle case with no cells, e.g. from a single empty axis.
+      return "_".to_string();
+    }
+    format!("_{}", parts.join("_"))
+  }
+
+  // New method to include parameter names
+  pub fn id_suffix_with_names(&self, param_names: &[String]) -> String {
+    if self.cells.is_empty() {
+      return "_".to_string();
+    }
+    if param_names.len() != self.cells.len() {
+      // Fallback or error if names don't match cell count
+      // This check should ideally be done earlier, when setting parameter_names in the suite.
+      // For robustness here, we can fall back to the old suffix or panic.
+      // Let's fall back for now, assuming the suite constructor/setter handles primary validation.
+      eprintln!("[BenchMatrix::AbstractCombination] [WARN] Mismatch between param_names length ({}) and cell count ({}). Falling back to default ID suffix.", param_names.len(), self.cells.len());
+      return self.id_suffix();
+    }
+
+    let parts: Vec<String> = self
+      .cells
+      .iter()
+      .zip(param_names.iter())
+      .map(|(cell, name)| {
+        let value_str = match cell {
           MatrixCellValue::Tag(s) => s.clone(),
-          MatrixCellValue::String(s) => s.replace(|c: char| !c.is_alphanumeric(), "_"), // Sanitize
-          MatrixCellValue::Int(i) => format!("Int{}", i),
-          MatrixCellValue::Unsigned(u) => format!("Uint{}", u),
-          MatrixCellValue::Bool(b) => format!("Bool{}", b),
-        }
+          MatrixCellValue::String(s) => s.replace(|c: char| !c.is_alphanumeric(), "_"),
+          MatrixCellValue::Int(i) => i.to_string(),
+          MatrixCellValue::Unsigned(u) => u.to_string(),
+          MatrixCellValue::Bool(b) => b.to_string(),
+        };
+        // Sanitize name similar to how tags might be used in filenames
+        let sanitized_name = name.replace(|c: char| !c.is_alphanumeric(), "");
+        format!("{}-{}", sanitized_name, value_str)
       })
       .collect();
     format!("_{}", parts.join("_"))

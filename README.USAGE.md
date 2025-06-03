@@ -8,8 +8,9 @@ This guide provides a detailed overview of `bench_matrix`, its core concepts, an
 *   [Quick Start Examples](#quick-start-examples)
     *   [Synchronous Benchmark Example](#synchronous-benchmark-example)
     *   [Asynchronous Benchmark Example](#asynchronous-benchmark-example)
-*   [Configuration System](#configuration-system)
+*   [Defining Parameters and Configurations](#defining-parameters-and-configurations)
     *   [`MatrixCellValue`](#matrixcellvalue)
+    *   [Parameter Axes and Names](#parameter-axes-and-names)
     *   [`AbstractCombination`](#abstractcombination)
     *   [Extractor Function (`ExtractorFn`)](#extractor-function-extractorfn)
 *   [Main API Sections](#main-api-sections)
@@ -17,6 +18,7 @@ This guide provides a detailed overview of `bench_matrix`, its core concepts, an
     *   [Synchronous Benchmarking (`SyncBenchmarkSuite`)](#synchronous-benchmarking-syncbenchmarksuite)
     *   [Asynchronous Benchmarking (`AsyncBenchmarkSuite`)](#asynchronous-benchmarking-asyncbenchmarksuite)
 *   [Customizing Benchmark Execution](#customizing-benchmark-execution)
+    *   [Providing Parameter Names for Group IDs](#providing-parameter-names-for-group-ids)
     *   [Global Setup and Teardown](#global-setup-and-teardown)
     *   [Customizing Criterion Groups](#customizing-criterion-groups)
     *   [Defining Throughput](#defining-throughput)
@@ -27,6 +29,7 @@ This guide provides a detailed overview of `bench_matrix`, its core concepts, an
 Understanding these concepts is key to effectively using `bench_matrix`:
 
 *   **Parameter Axis:** A `Vec<MatrixCellValue>` representing all possible values for a single dimension of your benchmark configuration. For example, an axis could define different buffer sizes: `vec![MatrixCellValue::Unsigned(64), MatrixCellValue::Unsigned(128)]`.
+*   **Parameter Names:** An optional `Vec<String>` where each string is a human-readable name for the corresponding parameter axis. These names are used by `bench_matrix` to generate more descriptive benchmark group IDs in Criterion (e.g., `_ParamName1-Value1_ParamName2-Value2`).
 *   **`MatrixCellValue`:** An enum (`Tag(String)`, `String(String)`, `Int(i64)`, `Unsigned(u64)`, `Bool(bool)`) representing a single, discrete value within a parameter axis.
 *   **`AbstractCombination`:** A struct holding a `Vec<MatrixCellValue>`, where each cell value is taken from a different parameter axis. This represents one unique configuration to be benchmarked (one "row" in your parameter matrix).
 *   **Configuration Extraction (`ExtractorFn`):** A user-provided function `Box<dyn Fn(&AbstractCombination) -> Result<Cfg, ExtErr>>`. Its role is to take an `AbstractCombination` and convert it into a concrete, strongly-typed configuration struct (`Cfg`) that your benchmark logic will consume. `ExtErr` is a user-defined error type, often `String`.
@@ -43,11 +46,11 @@ Understanding these concepts is key to effectively using `bench_matrix`:
 
 ## Quick Start Examples
 
-These examples demonstrate the basic structure of using `SyncBenchmarkSuite` and `AsyncBenchmarkSuite`.
+These examples demonstrate the basic structure of using `SyncBenchmarkSuite` and `AsyncBenchmarkSuite`, including providing parameter names.
 
 ### Synchronous Benchmark Example
 
-This example benchmarks a simple data processing task with varying data sizes and processing intensities.
+This example benchmarks a simple data processing task with varying data sizes and processing intensities, now with named parameters for clearer group IDs.
 
 ```rust
 // In your benches/my_sync_bench.rs
@@ -66,7 +69,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct ConfigSync {
   pub data_elements: usize,
-  pub intensity: String,
+  pub intensity_level: String, // Changed name for clarity
 }
 
 // 2. Define State and Context (optional context)
@@ -79,10 +82,13 @@ struct SyncState {
 }
 
 // 3. Implement Extractor Function
+//    (Assumes parameter_names are provided to the suite for group ID naming)
 fn extract_config(combo: &AbstractCombination) -> Result<ConfigSync, String> {
   Ok(ConfigSync {
+    // First axis (index 0) corresponds to "Elements" name
     data_elements: combo.get_u64(0)? as usize,
-    intensity: combo.get_string(1)?.to_string(),
+    // Second axis (index 1) corresponds to "Intensity" name
+    intensity_level: combo.get_string(1)?.to_string(),
   })
 }
 
@@ -100,34 +106,37 @@ fn benchmark_logic_fn(
 ) -> (SyncContext, SyncState, Duration) {
   let start_time = Instant::now();
   let mut sum = 0;
-  let multiplier = if cfg.intensity == "High" { 10 } else { 1 };
+  let multiplier = if cfg.intensity_level == "High" { 10 } else { 1 }; // Use intensity_level
   for &val in &state.dataset {
     for _ in 0..multiplier {
       sum = sum.wrapping_add(val);
     }
   }
-  // Pretend sum is used to avoid optimization
-  if sum == u64::MAX { println!("Overflow"); }
+  if sum == u64::MAX { println!("Overflow"); } // Pretend sum is used
   let duration = start_time.elapsed();
   ctx.items_processed += state.dataset.len();
   (ctx, state, duration)
 }
 
 // 6. Implement Teardown Function
-fn teardown_fn(_ctx: SyncContext, _state: SyncState, _cfg: &ConfigSync) {
-  // Cleanup, if necessary
-}
+fn teardown_fn(_ctx: SyncContext, _state: SyncState, _cfg: &ConfigSync) { /* ... */ }
 
 // 7. Define Benchmark Suite
 fn benchmark_sync(c: &mut Criterion) {
   let parameter_axes = vec![
-    vec![MatrixCellValue::Unsigned(100), MatrixCellValue::Unsigned(1000)], // data_elements
-    vec![MatrixCellValue::String("Low".to_string()), MatrixCellValue::String("High".to_string())], // intensity
+    vec![MatrixCellValue::Unsigned(100), MatrixCellValue::Unsigned(1000)], // For "Elements"
+    vec![MatrixCellValue::String("Low".to_string()), MatrixCellValue::String("High".to_string())], // For "Intensity"
+  ];
+
+  let parameter_names = vec![
+    "Elements".to_string(),
+    "Intensity".to_string(),
   ];
 
   let suite = SyncBenchmarkSuite::new(
     c,
     "MySyncSuite".to_string(),
+    Some(parameter_names), // Provide parameter names
     parameter_axes,
     Box::new(extract_config),
     setup_fn,
@@ -142,10 +151,11 @@ fn benchmark_sync(c: &mut Criterion) {
 criterion_group!(benches, benchmark_sync);
 criterion_main!(benches);
 ```
+*Resulting group ID example: `MySyncSuite_Elements-100_Intensity-Low`*
 
 ### Asynchronous Benchmark Example
 
-This example simulates an asynchronous network operation with varying packet sizes and concurrency.
+This example simulates an asynchronous network operation, now with named parameters.
 
 ```rust
 // In your benches/my_async_bench.rs
@@ -164,24 +174,22 @@ use tokio::runtime::Runtime;
 // 1. Define Configuration
 #[derive(Debug, Clone)]
 pub struct ConfigAsync {
-  pub packet_size: u32,
-  pub concurrent_ops: u16,
+  pub packet_size_bytes: u32, // Renamed for clarity
+  pub concurrent_operations: u16, // Renamed for clarity
 }
 
 // 2. Define State and Context
 #[derive(Default)]
-struct AsyncContext {
-  ops_this_iteration: u32,
-}
-struct AsyncState {
-  data_packet: Vec<u8>,
-}
+struct AsyncContext { ops_this_iteration: u32 }
+struct AsyncState { data_packet: Vec<u8> }
 
 // 3. Implement Extractor Function
 fn extract_config_async(combo: &AbstractCombination) -> Result<ConfigAsync, String> {
   Ok(ConfigAsync {
-    packet_size: combo.get_u64(0)? as u32,
-    concurrent_ops: combo.get_u64(1)? as u16,
+    // First axis (index 0) corresponds to "PktSize"
+    packet_size_bytes: combo.get_u64(0)? as u32,
+    // Second axis (index 1) corresponds to "ConcurrentOps"
+    concurrent_operations: combo.get_u64(1)? as u16,
   })
 }
 
@@ -192,7 +200,7 @@ fn setup_fn_async(
 ) -> Pin<Box<dyn Future<Output = Result<(AsyncContext, AsyncState), String>> + Send>> {
   let cfg_clone = cfg.clone();
   Box::pin(async move {
-    let data_packet = vec![0u8; cfg_clone.packet_size as usize];
+    let data_packet = vec![0u8; cfg_clone.packet_size_bytes as usize];
     Ok((AsyncContext::default(), AsyncState { data_packet }))
   })
 }
@@ -203,37 +211,29 @@ fn benchmark_logic_fn_async(
   state: AsyncState,
   cfg: &ConfigAsync,
 ) -> Pin<Box<dyn Future<Output = (AsyncContext, AsyncState, Duration)> + Send>> {
-  let concurrent_ops = cfg.concurrent_ops;
+  let concurrent_ops_count = cfg.concurrent_operations; // Use renamed field
   Box::pin(async move {
     let start_time = Instant::now();
-    // Simulate concurrent async operations
     let mut tasks = Vec::new();
-    for _ in 0..concurrent_ops {
+    for _ in 0..concurrent_ops_count { // Use renamed field
       let packet_clone = state.data_packet.clone();
       tasks.push(tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_micros(10)).await; // Simulate work
-        let _checksum = packet_clone.iter().sum::<u8>(); // Use packet
+        tokio::time::sleep(Duration::from_micros(10)).await;
+        let _checksum = packet_clone.iter().sum::<u8>();
       }));
     }
-    for task in tasks {
-      task.await.unwrap();
-    }
+    for task in tasks { task.await.unwrap(); }
     let duration = start_time.elapsed();
-    ctx.ops_this_iteration += concurrent_ops as u32;
+    ctx.ops_this_iteration += concurrent_ops_count as u32;
     (ctx, state, duration)
   })
 }
 
 // 6. Implement Async Teardown Function
 fn teardown_fn_async(
-  _ctx: AsyncContext,
-  _state: AsyncState,
-  _runtime: &Runtime,
-  _cfg: &ConfigAsync,
+  _ctx: AsyncContext, _state: AsyncState, _runtime: &Runtime, _cfg: &ConfigAsync,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-  Box::pin(async move {
-    // Async cleanup
-  })
+  Box::pin(async move { /* Async cleanup */ })
 }
 
 // 7. Define Benchmark Suite
@@ -241,21 +241,27 @@ fn benchmark_async(c: &mut Criterion) {
   let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
   let parameter_axes = vec![
-    vec![MatrixCellValue::Unsigned(64), MatrixCellValue::Unsigned(512)], // packet_size
-    vec![MatrixCellValue::Unsigned(1), MatrixCellValue::Unsigned(4)],   // concurrent_ops
+    vec![MatrixCellValue::Unsigned(64), MatrixCellValue::Unsigned(512)], // For "PktSize"
+    vec![MatrixCellValue::Unsigned(1), MatrixCellValue::Unsigned(4)],   // For "ConcurrentOps"
+  ];
+
+  let parameter_names = vec![
+      "PktSize".to_string(),
+      "ConcurrentOps".to_string(),
   ];
 
   let suite = AsyncBenchmarkSuite::new(
     c,
-    &rt, // Pass reference to runtime
+    &rt,
     "MyAsyncSuite".to_string(),
+    Some(parameter_names), // Provide parameter names
     parameter_axes,
     Box::new(extract_config_async),
     setup_fn_async,
     benchmark_logic_fn_async,
     teardown_fn_async,
   )
-  .throughput(|cfg: &ConfigAsync| Throughput::Elements(cfg.concurrent_ops as u64));
+  .throughput(|cfg: &ConfigAsync| Throughput::Elements(cfg.concurrent_operations as u64));
 
   suite.run();
 }
@@ -263,10 +269,11 @@ fn benchmark_async(c: &mut Criterion) {
 criterion_group!(benches, benchmark_async);
 criterion_main!(benches);
 ```
+*Resulting group ID example: `MyAsyncSuite_PktSize-64_ConcurrentOps-1`*
 
-## Configuration System
+## Defining Parameters and Configurations
 
-Configuration in `bench_matrix` revolves around defining parameter axes with `MatrixCellValue`, which are then combined into `AbstractCombination` instances. The user-provided `ExtractorFn` translates these abstract combinations into concrete, typed configuration structs.
+Configuration in `bench_matrix` revolves around defining parameter axes with `MatrixCellValue` along with optional names for these axes. These are then combined into `AbstractCombination` instances, and the user-provided `ExtractorFn` translates them into concrete, typed configuration structs.
 
 ### `MatrixCellValue`
 
@@ -280,20 +287,33 @@ An enum representing a single value for a parameter.
     *   `Unsigned(u64)`: An unsigned integer value.
     *   `Bool(bool)`: A boolean value.
 
-Example of defining parameter axes:
+### Parameter Axes and Names
+
+*   **Parameter Axes (`Vec<Vec<MatrixCellValue>>`):** A list where each inner vector represents one dimension of parameters. Each element in the inner vector is a `MatrixCellValue` representing a possible value for that parameter.
+*   **Parameter Names (`Option<Vec<String>>`):** An optional list of strings, where each string names the corresponding parameter axis. If provided, these names are used to create more descriptive benchmark group IDs (e.g., `_ParamName1-Value1_ParamName2-Value2`). The length of this vector must match the length of `parameter_axes`.
+
+Example:
 ```rust
 use bench_matrix::MatrixCellValue;
 
-let algorithms = vec![
+// Define axes
+let algorithms_axis = vec![
     MatrixCellValue::Tag("QuickSort".to_string()),
     MatrixCellValue::Tag("MergeSort".to_string()),
 ];
-let data_sizes = vec![
+let data_sizes_axis = vec![
     MatrixCellValue::Unsigned(100),
     MatrixCellValue::Unsigned(1000),
-    MatrixCellValue::Unsigned(10000),
 ];
-let parameter_axes = vec![algorithms, data_sizes];
+let parameter_axes = vec![algorithms_axis, data_sizes_axis];
+
+// Define corresponding names
+let parameter_names = Some(vec![
+    "Algorithm".to_string(),
+    "DataSize".to_string(),
+]);
+
+// These are then passed to the benchmark suite constructor.
 ```
 
 ### `AbstractCombination`
@@ -308,6 +328,8 @@ It provides helper methods to extract typed values by index:
 *   `pub fn get_u64(&self, index: usize) -> Result<u64, String>`
 *   `pub fn get_bool(&self, index: usize) -> Result<bool, String>`
 
+The struct also has methods `id_suffix()` and `id_suffix_with_names(&[String])` used internally by the suites to generate parts of the benchmark group ID.
+
 ### Extractor Function (`ExtractorFn`)
 
 This is a crucial user-defined function that bridges `AbstractCombination` to your specific configuration struct.
@@ -320,17 +342,17 @@ use bench_matrix::{AbstractCombination, ExtractorFn};
 
 #[derive(Debug, Clone)] // Your concrete config struct
 pub struct MyConfig {
-    pub algorithm: String,
-    pub size: usize,
-    pub pre_sorted: bool,
+    pub algorithm_name: String, // Field in your config
+    pub item_count: usize,      // Another field
 }
 
 fn my_extractor(combo: &AbstractCombination) -> Result<MyConfig, String> {
-    let algorithm = combo.get_tag(0)?.to_string();
-    let size = combo.get_u64(1)? as usize;
-    let pre_sorted = combo.get_bool(2)?;
+    // Assuming the first axis (index 0) was named "Algorithm" and contains Tags
+    let algorithm_name = combo.get_tag(0)?.to_string();
+    // Assuming the second axis (index 1) was named "ItemCount" and contains Unsigned
+    let item_count = combo.get_u64(1)? as usize;
 
-    Ok(MyConfig { algorithm, size, pre_sorted })
+    Ok(MyConfig { algorithm_name, item_count })
 }
 
 // Usage when creating a suite:
@@ -341,7 +363,7 @@ fn my_extractor(combo: &AbstractCombination) -> Result<MyConfig, String> {
 
 ### Generating Parameter Combinations
 
-The `generate_combinations` function is used to create all unique combinations from a set of parameter axes.
+The `generate_combinations` function is used to create all unique combinations from a set of parameter axes. This is typically called internally by the benchmark suites but can be used independently.
 
 *   **Signature:** `pub fn generate_combinations(axes: &[Vec<MatrixCellValue>]) -> Vec<AbstractCombination>`
 *   **Description:** Takes a slice of axes (each axis is a `Vec<MatrixCellValue>`) and returns a `Vec<AbstractCombination>` representing the Cartesian product.
@@ -355,8 +377,9 @@ Used for orchestrating benchmarks of synchronous code.
     *   `Cfg`: Your concrete configuration type.
     *   `CtxT`: Your benchmark context type.
 *   **Constructor:**
-    `pub fn new(criterion: &'s mut Criterion<WallTime>, suite_base_name: String, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: SyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: SyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: SyncTeardownFn<S, Cfg, CtxT>) -> Self`
+    `pub fn new(criterion: &'s mut Criterion<WallTime>, suite_base_name: String, parameter_names: Option<Vec<String>>, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: SyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: SyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: SyncTeardownFn<S, Cfg, CtxT>) -> Self`
     *   Creates a new synchronous benchmark suite.
+    *   `parameter_names`: Optional names for each axis, used for group ID generation.
 *   **Key Type Aliases for Callbacks:**
     *   `pub type SyncSetupFn<S, Cfg, CtxT, SetupErr = String> = fn(&Cfg) -> Result<(CtxT, S), SetupErr>;`
         *   Logic to set up state and context for a batch of benchmark iterations.
@@ -377,8 +400,9 @@ Used for orchestrating benchmarks of asynchronous code, typically with Tokio.
     *   `Cfg`: Your concrete configuration type.
     *   `CtxT`: Your benchmark context type.
 *   **Constructor:**
-    `pub fn new(criterion: &'s mut Criterion<WallTime>, runtime: &'s Runtime, suite_base_name: String, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: AsyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: AsyncTeardownFn<S, Cfg, CtxT>) -> Self`
+    `pub fn new(criterion: &'s mut Criterion<WallTime>, runtime: &'s Runtime, suite_base_name: String, parameter_names: Option<Vec<String>>, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: AsyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: AsyncTeardownFn<S, Cfg, CtxT>) -> Self`
     *   Creates a new asynchronous benchmark suite. Requires a Tokio `Runtime`.
+    *   `parameter_names`: Optional names for each axis, used for group ID generation.
 *   **Key Type Aliases for Callbacks:**
     *   `pub type AsyncSetupFn<S, Cfg, CtxT, SetupErr = String> = fn(&Runtime, &Cfg) -> Pin<Box<dyn Future<Output = Result<(CtxT, S), SetupErr>> + Send>>;`
         *   Async logic to set up state and context for each benchmark iteration.
@@ -393,6 +417,13 @@ Used for orchestrating benchmarks of asynchronous code, typically with Tokio.
 ## Customizing Benchmark Execution
 
 Both `SyncBenchmarkSuite` and `AsyncBenchmarkSuite` offer builder-style methods for further customization:
+
+### Providing Parameter Names for Group IDs
+
+While `parameter_names` can be passed to the `new` constructor, you can also set or override them using a builder method:
+
+*   `pub fn parameter_names(self, names: Vec<String>) -> Self` (Available on both suites)
+    *   Sets the names for parameter axes. If `names.len()` does not match the number of defined axes, these names will be ignored for ID generation, and a warning will be printed.
 
 ### Global Setup and Teardown
 
@@ -419,7 +450,7 @@ Allows direct configuration of the `criterion::BenchmarkGroup` for each paramete
 Allows specifying throughput for Criterion, which can be based on the concrete configuration.
 
 *   `pub fn throughput(self, f: impl Fn(&Cfg) -> Throughput + 'static) -> Self`
-    *   Example usage: `.throughput(|config: &MyConfig| Throughput::Bytes(config.bytes_processed as u64))`
+    *   Example usage: `.throughput(|config: &MyConfig| Throughput::Bytes(config.item_count as u64))`
 
 ## Error Handling
 
@@ -428,6 +459,7 @@ Allows specifying throughput for Criterion, which can be based on the concrete c
 *   **`ExtractorFn` and `GlobalSetupFn` Errors:** If the `ExtractorFn` (for converting `AbstractCombination` to `Cfg`) or the `GlobalSetupFn` fails for a particular combination, that combination and its associated benchmarks will be skipped. An error message is printed to `stderr`.
 *   **`SetupFn` (within Criterion loop) Errors:** If the `SyncSetupFn` or `AsyncSetupFn` (which are called by Criterion during its sampling process) return an `Err`, `bench_matrix` will `panic!`. This is because Criterion expects setup within its iteration logic to succeed to ensure valid measurements.
 *   **`GlobalTeardownFn` Errors:** Failures in `GlobalTeardownFn` are reported as warnings to `stderr` but do not stop other benchmarks.
+*   **Parameter Name Mismatch:** If `parameter_names` are provided but their count doesn't match the number of `parameter_axes`, a warning is printed, and the names are ignored for ID generation (falling back to default ID suffixes).
 *   **Error Types:** User-provided functions typically return `Result<T, String>` or `Result<T, UserDefinedError>`. The default error type for `ExtractorFn` and `SetupFn` generic parameters is `String`.
 
 The `benchmark_logic_fn` and `teardown_fn` (the ones called repeatedly by Criterion) do not directly return `Result` to `bench_matrix`. Any panics within these will be handled by Criterion as usual.

@@ -7,6 +7,7 @@
 **Core Concepts:**
 
 *   **Parameter Axis:** A list of possible values for a single dimension of your benchmark configuration. For example, an axis could represent different buffer sizes `[64, 128, 256]` or different algorithms `["AlgorithmA", "AlgorithmB"]`.
+*   **Parameter Names:** A list of human-readable names corresponding to each parameter axis, used for generating descriptive benchmark group IDs.
 *   **`MatrixCellValue`:** An enum representing a single value within a parameter axis (e.g., a specific tag, string, integer, or boolean).
 *   **`AbstractCombination`:** A struct representing one unique combination of `MatrixCellValue`s, one from each defined axis. This forms a single "row" in your conceptual parameter matrix.
 *   **Configuration Extraction (`ExtractorFn`):** A user-provided function that takes an `AbstractCombination` and translates it into a concrete, strongly-typed configuration struct (defined by the user) that the benchmark logic will use.
@@ -23,8 +24,8 @@
 
 The primary way to interact with `bench_matrix` is by:
 
-1.  Defining your parameter axes using `Vec<Vec<MatrixCellValue>>`.
-2.  Creating an instance of either `SyncBenchmarkSuite` or `AsyncBenchmarkSuite` using their `new` methods.
+1.  Defining your parameter axes using `Vec<Vec<MatrixCellValue>>` and optionally their corresponding names using `Vec<String>`.
+2.  Creating an instance of either `SyncBenchmarkSuite` or `AsyncBenchmarkSuite` using their `new` methods (providing parameter names and axes) or by using the `parameter_names()` builder method after construction.
 3.  Providing the necessary callback functions (extractor, setup, logic, teardown) to the suite.
 4.  Optionally configuring the suite further using its builder methods (e.g., for global setup/teardown, Criterion group configuration).
 5.  Calling the `run()` method on the suite instance within your Criterion benchmark functions.
@@ -143,7 +144,10 @@ Represents one specific combination of abstract parameter values.
     *   `pub cells: Vec<MatrixCellValue>`: The collection of `MatrixCellValue`s that make up this unique combination.
 *   **Public Methods:**
     *   `pub fn id_suffix(&self) -> String`
-        *   Generates a string suffix suitable for use in benchmark IDs.
+        *   Generates a string suffix suitable for use in benchmark IDs (e.g., `_Value1_Value2`). Use `id_suffix_with_names` for more descriptive IDs if parameter names are available.
+    *   `pub fn id_suffix_with_names(&self, param_names: &[String]) -> String`
+        *   Generates a descriptive string suffix for benchmark IDs, incorporating parameter names (e.g., `_ParamName1-Value1_ParamName2-Value2`).
+        *   Falls back to `id_suffix()` behavior if `param_names.len()` does not match `self.cells.len()`.
     *   `pub fn get_tag(&self, index: usize) -> Result<&str, String>`
         *   Helper to get a cell by index and interpret it as a `Tag`.
     *   `pub fn get_string(&self, index: usize) -> Result<&str, String>`
@@ -213,6 +217,7 @@ Orchestrates a suite of synchronous benchmarks.
         `pub fn new(`
         `  criterion: &'s mut criterion::Criterion<criterion::measurement::WallTime>,`
         `  suite_base_name: String,`
+        `  parameter_names: Option<Vec<String>>,`
         `  parameter_axes: Vec<Vec<MatrixCellValue>>,`
         `  extractor_fn: ExtractorFn<Cfg, ExtErr>,`
         `  setup_fn: SyncSetupFn<S, Cfg, CtxT, SetupErr>,`
@@ -220,6 +225,9 @@ Orchestrates a suite of synchronous benchmarks.
         `  teardown_fn: SyncTeardownFn<S, Cfg, CtxT>,`
         `) -> Self`
         *   Constructs a new `SyncBenchmarkSuite`.
+        *   `parameter_names`: Optional vector of strings naming each parameter axis for descriptive group IDs. If `Some`, its length must match `parameter_axes.len()`.
+    *   `pub fn parameter_names(self, names: Vec<String>) -> Self`
+        *   Builder method to set or override the parameter names. If `names.len()` does not match `self.parameter_axes.len()`, names will be ignored.
     *   `pub fn global_setup(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
         *   Sets the global setup function to be run once per concrete configuration `Cfg` before its benchmark group.
     *   `pub fn global_teardown(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
@@ -264,6 +272,7 @@ Orchestrates a suite of asynchronous benchmarks.
         `  criterion: &'s mut criterion::Criterion<criterion::measurement::WallTime>,`
         `  runtime: &'s tokio::runtime::Runtime,`
         `  suite_base_name: String,`
+        `  parameter_names: Option<Vec<String>>,`
         `  parameter_axes: Vec<Vec<MatrixCellValue>>,`
         `  extractor_fn: ExtractorFn<Cfg, ExtErr>,`
         `  setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>,`
@@ -271,6 +280,9 @@ Orchestrates a suite of asynchronous benchmarks.
         `  teardown_fn: AsyncTeardownFn<S, Cfg, CtxT>,`
         `) -> Self`
         *   Constructs a new `AsyncBenchmarkSuite`. Requires a reference to a Tokio `Runtime`.
+        *   `parameter_names`: Optional vector of strings naming each parameter axis for descriptive group IDs. If `Some`, its length must match `parameter_axes.len()`.
+    *   `pub fn parameter_names(self, names: Vec<String>) -> Self`
+        *   Builder method to set or override the parameter names. If `names.len()` does not match `self.parameter_axes.len()`, names will be ignored.
     *   `pub fn global_setup(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
         *   Sets the global setup function.
     *   `pub fn global_teardown(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
@@ -297,5 +309,6 @@ Orchestrates a suite of asynchronous benchmarks.
     *   Combination extraction fails.
     *   Global setup for a configuration fails.
     *   Global teardown for a configuration fails (reported as a warning).
+    *   A mismatch occurs between the length of `parameter_names` and `parameter_axes` (reported as a warning, names ignored).
 
 Users are responsible for handling errors within their `benchmark_logic_fn` and `teardown_fn` implementations as these functions are not expected to return `Result` to the `bench_matrix` framework directly (though they can, of course, propagate panics).

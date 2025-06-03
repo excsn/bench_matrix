@@ -27,6 +27,7 @@ pub struct AsyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr = String, SetupErr = Str
   suite_base_name: String,
   parameter_axes: Vec<Vec<MatrixCellValue>>,
   extractor_fn: ExtractorFn<Cfg, ExtErr>,
+  parameter_names: Option<Vec<String>>,
   global_setup_fn: Option<GlobalSetupFn<Cfg>>,
   setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>,
   benchmark_logic_fn: AsyncBenchmarkLogicFn<S, Cfg, CtxT>,
@@ -49,16 +50,32 @@ where
     criterion: &'s mut Criterion<WallTime>,
     runtime: &'s Runtime,
     suite_base_name: String,
+    parameter_names: Option<Vec<String>>,
     parameter_axes: Vec<Vec<MatrixCellValue>>,
     extractor_fn: ExtractorFn<Cfg, ExtErr>,
     setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>,
     benchmark_logic_fn: AsyncBenchmarkLogicFn<S, Cfg, CtxT>,
     teardown_fn: AsyncTeardownFn<S, Cfg, CtxT>,
   ) -> Self {
+    if let Some(names) = &parameter_names {
+      if names.len() != parameter_axes.len() {
+        // Or panic, or return Result. For now, let's warn and proceed without names.
+        eprintln!(
+                "[BenchMatrix::Async] [WARN] Suite '{}': Mismatch between number of parameter_names ({}) and parameter_axes ({}). Parameter names will be ignored for ID generation.",
+                suite_base_name,
+                names.len(),
+                parameter_axes.len()
+            );
+        // Fallback to None if there's a mismatch.
+        // Or, one could make parameter_names: Vec<String> and require it to match.
+      }
+    }
+
     Self {
       criterion,
       runtime,
       suite_base_name,
+      parameter_names,
       parameter_axes,
       extractor_fn,
       global_setup_fn: None,
@@ -143,7 +160,13 @@ where
         }
       }
 
-      let group_name = format!("{}{}", self.suite_base_name, abstract_combo.id_suffix());
+      let combo_id_suffix = if let Some(names) = &self.parameter_names {
+        abstract_combo.id_suffix_with_names(names)
+      } else {
+        abstract_combo.id_suffix() // Fallback to old method
+      };
+      
+      let group_name = format!("{}{}", self.suite_base_name, combo_id_suffix);
       let mut group = self.criterion.benchmark_group(&group_name);
 
       if let Some(ref configurator) = self.criterion_group_configurator {
