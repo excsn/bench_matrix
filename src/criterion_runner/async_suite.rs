@@ -1,13 +1,12 @@
-// bench_matrix/src/criterion_runner/async_suite.rs
-
 #![cfg(feature = "criterion_integration")]
 
 use super::{ExtractorFn, GlobalSetupFn, GlobalTeardownFn};
 use crate::generator::generate_combinations;
-use crate::params::{AbstractCombination, MatrixCellValue};
+use crate::params::MatrixCellValue;
 
 use criterion::{
-  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput,
+  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration,
+  Throughput,
 };
 use std::fmt::Debug;
 use std::future::Future;
@@ -59,15 +58,12 @@ where
   ) -> Self {
     if let Some(names) = &parameter_names {
       if names.len() != parameter_axes.len() {
-        // Or panic, or return Result. For now, let's warn and proceed without names.
         eprintln!(
                 "[BenchMatrix::Async] [WARN] Suite '{}': Mismatch between number of parameter_names ({}) and parameter_axes ({}). Parameter names will be ignored for ID generation.",
                 suite_base_name,
                 names.len(),
                 parameter_axes.len()
             );
-        // Fallback to None if there's a mismatch.
-        // Or, one could make parameter_names: Vec<String> and require it to match.
       }
     }
 
@@ -86,6 +82,21 @@ where
       criterion_group_configurator: None,
       throughput_calculator: None,
     }
+  }
+
+  pub fn parameter_names(mut self, names: Vec<String>) -> Self {
+    if names.len() != self.parameter_axes.len() {
+      eprintln!(
+              "[BenchMatrix::Async] [WARN] Suite '{}': Mismatch between number of parameter_names ({}) and parameter_axes ({}). Parameter names will be ignored for ID generation.",
+              self.suite_base_name,
+              names.len(),
+              self.parameter_axes.len()
+          );
+      self.parameter_names = None;
+    } else {
+      self.parameter_names = Some(names);
+    }
+    self
   }
 
   pub fn global_setup(mut self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self {
@@ -111,7 +122,7 @@ where
   pub fn run(mut self) {
     let abstract_combinations = generate_combinations(&self.parameter_axes);
 
-    if abstract_combinations.is_empty() {
+    if abstract_combinations.len() == 0 {
       let reason = if self.parameter_axes.is_empty() {
         "no parameter axes defined"
       } else {
@@ -124,9 +135,20 @@ where
       return;
     }
 
+    let total_variants = abstract_combinations.len();
     let mut variants_run_count = 0;
     let mut variants_skipped_extraction = 0;
     let mut variants_skipped_global_setup = 0;
+
+    let mut group = self.criterion.benchmark_group(&self.suite_base_name);
+
+    if let Some(ref configurator) = self.criterion_group_configurator {
+        configurator(&mut group);
+    } else {
+        group
+            .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
+            .sample_size(10);
+    }
 
     for abstract_combo in abstract_combinations {
       let concrete_config = match (self.extractor_fn)(&abstract_combo) {
@@ -160,41 +182,29 @@ where
         }
       }
 
-      let combo_id_suffix = if let Some(names) = &self.parameter_names {
-        abstract_combo.id_suffix_with_names(names)
+      let parameter_string = if let Some(names) = &self.parameter_names {
+        abstract_combo.id_suffix_with_names(names).strip_prefix('_').unwrap_or("").to_string()
       } else {
-        abstract_combo.id_suffix() // Fallback to old method
+        abstract_combo.id_suffix().strip_prefix('_').unwrap_or("").to_string()
       };
       
-      let group_name = format!("{}{}", self.suite_base_name, combo_id_suffix);
-      let mut group = self.criterion.benchmark_group(&group_name);
-
-      if let Some(ref configurator) = self.criterion_group_configurator {
-        configurator(&mut group);
-      } else {
-        group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
-        group.sample_size(10);
-      }
-
-      if let Some(ref throughput_calc) = self.throughput_calculator {
-        group.throughput(throughput_calc(&concrete_config));
-      }
-
-      let bench_id = BenchmarkId::from_parameter(abstract_combo.id_suffix());
+      let bench_id = BenchmarkId::from_parameter(&parameter_string);
 
       let rt_for_iter = self.runtime;
-      let cfg_for_iter_template = concrete_config.clone();
       let setup_fn_ptr = self.setup_fn;
       let benchmark_logic_fn_ptr = self.benchmark_logic_fn;
       let teardown_fn_ptr = self.teardown_fn;
-
-      group.bench_function(bench_id, move |b: &mut Bencher<'_, WallTime>| {
-        b.to_async(rt_for_iter).iter_custom(|iters_count_hint| {
-          let cfg_clone_per_sample = cfg_for_iter_template.clone();
-          async move {
-            let mut total_duration_for_sample_batch = Duration::new(0, 0);
-            for _i in 0..iters_count_hint {
-              let (user_ctx, setup_data_instance) = Box::pin((setup_fn_ptr)(rt_for_iter, &cfg_clone_per_sample))
+      
+      // Use `bench_with_input` to create a configurable benchmark.
+      // The `concrete_config` is passed as the "input" to the closure.
+      let mut bench_registration = group.bench_with_input(bench_id, &concrete_config, 
+        move |b: &mut Bencher<'_, WallTime>, cfg: &Cfg| {
+          b.to_async(rt_for_iter).iter_custom(|iters_count_hint| {
+            // The `cfg` from the closure is the specific config for this benchmark run.
+            let cfg_clone_per_sample = cfg.clone();
+            async move {
+              // Setup is done ONCE per sample batch.
+              let (mut user_ctx, mut setup_data_instance) = Box::pin((setup_fn_ptr)(rt_for_iter, &cfg_clone_per_sample))
                 .await
                 .unwrap_or_else(|e| {
                   panic!(
@@ -203,30 +213,42 @@ where
                   )
                 });
 
-              let (ctx_after_bench, s_after_bench, measured_duration) = Box::pin((benchmark_logic_fn_ptr)(
+              let mut total_duration_for_sample_batch = Duration::new(0, 0);
+              for _i in 0..iters_count_hint {
+                let (ctx_after_bench, s_after_bench, measured_duration) = Box::pin((benchmark_logic_fn_ptr)(
+                  user_ctx,
+                  setup_data_instance,
+                  &cfg_clone_per_sample,
+                ))
+                .await;
+
+                total_duration_for_sample_batch += measured_duration;
+                user_ctx = ctx_after_bench;
+                setup_data_instance = s_after_bench;
+              }
+
+              // Teardown is done ONCE per sample batch.
+              Box::pin((teardown_fn_ptr)(
                 user_ctx,
                 setup_data_instance,
-                &cfg_clone_per_sample,
-              ))
-              .await;
-
-              total_duration_for_sample_batch += measured_duration;
-
-              Box::pin((teardown_fn_ptr)(
-                ctx_after_bench,
-                s_after_bench,
                 rt_for_iter,
                 &cfg_clone_per_sample,
               ))
               .await;
+              
+              total_duration_for_sample_batch
             }
-            total_duration_for_sample_batch
-          }
-        });
-      });
+          });
+        }
+      );
+
+      // Now, configure the throughput on the returned benchmark object.
+      if let Some(ref throughput_calc) = self.throughput_calculator {
+        bench_registration.throughput(throughput_calc(&concrete_config));
+      }
 
       variants_run_count += 1;
-      // Global teardown is called *after* the group for this variant is finished.
+
       if let Some(ref mut global_teardown) = self.global_teardown_fn {
         if let Err(e) = global_teardown(&concrete_config) {
           eprintln!(
@@ -238,14 +260,15 @@ where
           );
         }
       }
-      group.finish();
     }
+    
+    group.finish();
 
     if variants_skipped_extraction > 0 || variants_skipped_global_setup > 0 {
       eprintln!(
                 "[BenchMatrix::Async] Suite '{}' summary: {} variants attempted, {} successfully run, {} skipped (extraction), {} skipped (global setup).",
                 self.suite_base_name,
-                variants_run_count + variants_skipped_extraction + variants_skipped_global_setup,
+                total_variants,
                 variants_run_count,
                 variants_skipped_extraction,
                 variants_skipped_global_setup

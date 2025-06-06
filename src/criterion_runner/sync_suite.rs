@@ -5,13 +5,11 @@ use crate::generator::generate_combinations;
 use crate::params::MatrixCellValue;
 
 use criterion::{
-  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput,
+  measurement::WallTime, AxisScale, Bencher, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration,
+  Throughput,
 };
 use std::fmt::Debug;
 use std::time::Duration;
-// No Tokio Runtime directly needed for sync suite's core logic,
-// but Criterion's iter_custom might still be run within an async context if called from an async bencher.
-// However, for a purely sync suite, we aim to avoid async machinery where possible.
 
 pub type SyncSetupFn<S, Cfg, CtxT, SetupErr = String> = fn(&Cfg) -> Result<(CtxT, S), SetupErr>;
 pub type SyncBenchmarkLogicFn<S, Cfg, CtxT> = fn(CtxT, S, &Cfg) -> (CtxT, S, Duration);
@@ -34,7 +32,7 @@ pub struct SyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr = String, SetupErr = Stri
 
 impl<'s, S, Cfg, CtxT, ExtErr, SetupErr> SyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr, SetupErr>
 where
-  S: Send + 'static, // Send can be useful even for sync code with Criterion
+  S: Send + 'static,
   Cfg: Clone + Debug + Send + Sync + 'static,
   CtxT: Send + 'static,
   ExtErr: Debug,
@@ -75,7 +73,7 @@ where
               names.len(),
               self.parameter_axes.len()
           );
-      self.parameter_names = None; // Or keep existing if it was already Some and valid
+      self.parameter_names = None;
     } else {
       self.parameter_names = Some(names);
     }
@@ -105,11 +103,11 @@ where
   pub fn run(mut self) {
     let abstract_combinations = generate_combinations(&self.parameter_axes);
 
-    if abstract_combinations.is_empty() {
+    if abstract_combinations.len() == 0 {
       let reason = if self.parameter_axes.is_empty() {
         "no parameter axes defined"
       } else {
-        "no combinations generated"
+        "no combinations generated (e.g., an axis was empty)"
       };
       eprintln!(
         "[BenchMatrix::Sync] Suite '{}': {}. Nothing to run.",
@@ -118,9 +116,20 @@ where
       return;
     }
 
+    let total_variants = abstract_combinations.len();
     let mut variants_run_count = 0;
     let mut variants_skipped_extraction = 0;
     let mut variants_skipped_global_setup = 0;
+
+    let mut group = self.criterion.benchmark_group(&self.suite_base_name);
+    
+    if let Some(ref configurator) = self.criterion_group_configurator {
+      configurator(&mut group);
+    } else {
+      group
+        .plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic))
+        .sample_size(10);
+    }
 
     for abstract_combo in abstract_combinations {
       let concrete_config = match (self.extractor_fn)(&abstract_combo) {
@@ -153,64 +162,58 @@ where
           continue;
         }
       }
-      let combo_id_suffix = if let Some(names) = &self.parameter_names {
-        abstract_combo.id_suffix_with_names(names)
+
+      let parameter_string = if let Some(names) = &self.parameter_names {
+        abstract_combo.id_suffix_with_names(names).strip_prefix('_').unwrap_or("").to_string()
       } else {
-        abstract_combo.id_suffix() // Fallback to old method
+        abstract_combo.id_suffix().strip_prefix('_').unwrap_or("").to_string()
       };
-      let group_name = format!("{}{}", self.suite_base_name, combo_id_suffix);
-      let mut group = self.criterion.benchmark_group(&group_name);
 
-      if let Some(ref configurator) = self.criterion_group_configurator {
-        configurator(&mut group);
-      } else {
-        group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
-        group.sample_size(10);
-      }
+      let bench_id = BenchmarkId::from_parameter(&parameter_string);
 
-      if let Some(ref throughput_calc) = self.throughput_calculator {
-        group.throughput(throughput_calc(&concrete_config));
-      }
-
-      let bench_id = BenchmarkId::from_parameter(abstract_combo.id_suffix());
-
-      let cfg_for_iter_template = concrete_config.clone();
       let setup_fn_ptr = self.setup_fn;
       let benchmark_logic_fn_ptr = self.benchmark_logic_fn;
       let teardown_fn_ptr = self.teardown_fn;
 
-      group.bench_function(bench_id, move |b: &mut Bencher<'_, WallTime>| {
-        // For synchronous code, iter_custom allows explicit setup/teardown per sample batch.
-        b.iter_custom(|iters_count_hint| {
-          let cfg_clone_per_sample_batch = cfg_for_iter_template.clone();
-          let mut total_duration_for_sample_batch = Duration::new(0, 0);
+      // Use `bench_with_input` to create a configurable benchmark.
+      let mut bench_registration = group.bench_with_input(bench_id, &concrete_config, 
+        move |b: &mut Bencher<'_, WallTime>, cfg: &Cfg| {
+          b.iter_custom(|iters_count_hint| {
+            // The `cfg` from the closure is the specific config for this benchmark run.
+            let cfg_clone_per_sample_batch = cfg.clone();
+            
+            let (mut user_ctx, mut setup_data_instance) =
+              (setup_fn_ptr)(&cfg_clone_per_sample_batch).unwrap_or_else(|e| {
+                panic!(
+                  "[BenchMatrix::Sync] PANIC in sample: Sync setup_fn failed for config {:?}: {:?}",
+                  cfg_clone_per_sample_batch, e
+                )
+              });
+              
+            let mut total_duration_for_sample_batch = Duration::new(0, 0);
+            for _i in 0..iters_count_hint {
+              let (ctx_after_iter, s_after_iter, measured_duration) =
+                (benchmark_logic_fn_ptr)(user_ctx, setup_data_instance, &cfg_clone_per_sample_batch);
 
-          // Setup is done ONCE for the batch of iterations for this sample.
-          let (mut user_ctx, mut setup_data_instance) =
-            (setup_fn_ptr)(&cfg_clone_per_sample_batch).unwrap_or_else(|e| {
-              panic!(
-                "[BenchMatrix::Sync] PANIC in sample: Sync setup_fn failed for config {:?}: {:?}",
-                cfg_clone_per_sample_batch, e
-              )
-            });
+              total_duration_for_sample_batch += measured_duration;
+              user_ctx = ctx_after_iter;
+              setup_data_instance = s_after_iter;
+            }
 
-          for _i in 0..iters_count_hint {
-            let (ctx_after_iter, s_after_iter, measured_duration) =
-              (benchmark_logic_fn_ptr)(user_ctx, setup_data_instance, &cfg_clone_per_sample_batch);
+            (teardown_fn_ptr)(user_ctx, setup_data_instance, &cfg_clone_per_sample_batch);
 
-            total_duration_for_sample_batch += measured_duration;
-            user_ctx = ctx_after_iter;
-            setup_data_instance = s_after_iter;
-          }
+            total_duration_for_sample_batch
+          });
+        }
+      );
 
-          (teardown_fn_ptr)(user_ctx, setup_data_instance, &cfg_clone_per_sample_batch);
-
-          total_duration_for_sample_batch
-        });
-      });
+      // Now, configure the throughput on the returned benchmark object.
+      if let Some(ref throughput_calc) = self.throughput_calculator {
+        bench_registration.throughput(throughput_calc(&concrete_config));
+      }
 
       variants_run_count += 1;
-      // Global teardown is called *after* the group for this variant is finished.
+
       if let Some(ref mut global_teardown) = self.global_teardown_fn {
         if let Err(e) = global_teardown(&concrete_config) {
           eprintln!(
@@ -222,14 +225,15 @@ where
           );
         }
       }
-      group.finish();
     }
+    
+    group.finish();
 
     if variants_skipped_extraction > 0 || variants_skipped_global_setup > 0 {
       eprintln!(
                 "[BenchMatrix::Sync] Suite '{}' summary: {} variants attempted, {} successfully run, {} skipped (extraction), {} skipped (global setup).",
                 self.suite_base_name,
-                variants_run_count + variants_skipped_extraction + variants_skipped_global_setup,
+                total_variants,
                 variants_run_count,
                 variants_skipped_extraction,
                 variants_skipped_global_setup

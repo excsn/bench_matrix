@@ -4,48 +4,78 @@
 [![Docs.rs](https://docs.rs/bench_matrix/badge.svg)](https://docs.rs/bench_matrix)
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](LICENSE)
 
-`bench_matrix` is a Rust utility crate designed to simplify the definition and orchestration of parameterized benchmarks, particularly when used with the Criterion benchmarking harness. It helps you systematically test your code across a wide range of configurations by automating the generation and execution of benchmark combinations.
+`bench_matrix` is a Rust utility crate that supercharges your parameterized benchmarks. It provides a powerful and ergonomic framework for running benchmarks across a complex matrix of configurations, integrating seamlessly with the [Criterion](https://crates.io/crates/criterion) harness.
 
-The core problem `bench_matrix` solves is the reduction of boilerplate and manual effort required to set up benchmarks for multiple parameter sets. Instead of writing numerous, slightly varied benchmark functions, you define parameter "axes," and `bench_matrix` takes care of running your benchmark logic for every resulting combination, integrating smoothly with Criterion for robust measurement and reporting.
+Stop writing repetitive benchmark functions. Define your parameter axes once, and let `bench_matrix` handle the rest, generating a full suite of benchmarks with clean, hierarchical reporting.
 
-## Key Features
+## Why use `bench_matrix`?
 
-### Parameterized Benchmarking
-Easily define multiple axes of parameters (e.g., different data sizes, algorithm types, concurrency levels). `bench_matrix` then generates the Cartesian product of these axes, ensuring comprehensive coverage of all specified configurations.
+*   **Eliminate Boilerplate:** Define your parameters (e.g., data sizes, algorithms, concurrency levels) in one place. `bench_matrix` generates the Cartesian product, ensuring every combination is tested without repetitive code.
+*   **Memory Efficient:** Lazily generates benchmark combinations on the fly. You can define a test matrix with millions of variants without consuming gigabytes of memory upfront.
+*   **Clean, Hierarchical Reports:** Automatically creates well-named Criterion groups, leading to organized and readable benchmark results (e.g., `MySuite/Algorithm-QuickSort_DataSize-1000`).
+*   **Seamless Criterion Integration:** Built from the ground up to work with Criterion, leveraging its powerful statistical analysis and plotting features.
+*   **Async & Sync Ready:** Provides dedicated, consistent APIs for both synchronous (`SyncBenchmarkSuite`) and asynchronous (`AsyncBenchmarkSuite`) code.
+*   **Type-Safe & Customizable:** Use your own strongly-typed configuration structs and hook into a flexible lifecycle with `setup`, `teardown`, and `global_setup` functions.
 
-### Seamless Criterion Integration
-Designed to work hand-in-hand with the [Criterion](https://crates.io/crates/criterion) benchmarking harness. It leverages Criterion's powerful statistical analysis, reporting, and plotting capabilities for the generated benchmark matrix.
+## A Quick Look
 
-### Synchronous & Asynchronous Support
-Offers dedicated benchmark suites for both synchronous (`SyncBenchmarkSuite`) and asynchronous (`AsyncBenchmarkSuite`) code. The async suite integrates with Tokio runtimes.
+Here's how you can set up a benchmark for a function across multiple data sizes and processing intensities:
 
-### Customizable Benchmark Lifecycle
-Provides hooks for user-defined functions at various stages of the benchmark lifecycle for each configuration:
-*   **Setup:** Prepare state and context before measurement.
-*   **Core Logic:** The actual code to be benchmarked.
-*   **Teardown:** Clean up resources after measurement.
-*   **Global Setup/Teardown:** Execute code once before and after all benchmarks for a specific concrete configuration.
+```rust
+// In benches/my_bench.rs
+use bench_matrix::{criterion_runner::sync_suite::SyncBenchmarkSuite, MatrixCellValue};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 
-### Type-Safe Configuration Extraction
-Uses a user-provided "extractor" function (`ExtractorFn`) to convert abstract parameter combinations (`AbstractCombination`) into your own strongly-typed configuration structs. This ensures that your benchmark logic receives well-defined, type-safe configuration.
+fn my_benchmark_function(c: &mut Criterion) {
+    let parameter_axes = vec![
+        // Axis 1: Number of data elements
+        vec![MatrixCellValue::Unsigned(100), MatrixCellValue::Unsigned(1000)],
+        // Axis 2: Processing intensity
+        vec![MatrixCellValue::String("Low".to_string()), MatrixCellValue::String("High".to_string())],
+    ];
+
+    let parameter_names = vec!["Elements".to_string(), "Intensity".to_string()];
+
+    // Define your config struct, state, extractor, and lifecycle functions...
+    // (See the Usage Guide for full details)
+
+    let suite = SyncBenchmarkSuite::new(
+        c, "DataProcessingSuite".to_string(), None, parameter_axes,
+        Box::new(my_extractor_fn),
+        my_setup_fn,
+        my_logic_fn,
+        my_teardown_fn,
+    )
+    .parameter_names(parameter_names)
+    .throughput(|cfg: &MyConfig| Throughput::Elements(cfg.data_elements as u64));
+
+    suite.run();
+}
+
+criterion_group!(benches, my_benchmark_function);
+criterion_main!(benches);
+```
+This will produce benchmark results like:
+*   `DataProcessingSuite/Elements-100_Intensity-Low`
+*   `DataProcessingSuite/Elements-100_Intensity-High`
+*   `DataProcessingSuite/Elements-1000_Intensity-Low`
+*   `DataProcessingSuite/Elements-1000_Intensity-High`
 
 ## Installation
 
-Add `bench_matrix` to your `Cargo.toml` file:
+Add `bench_matrix` and its companions to the `[dev-dependencies]` section of your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-bench_matrix = "0.1.0" # Replace with the latest version
-criterion = "0.5"     # bench_matrix is often used with criterion
-tokio = { version = "1", features = ["full"] } # If using async benchmarks
+bench_matrix = "0.2.0" # Replace with the latest version
+criterion = "0.5"
+tokio = { version = "1", features = ["full"] } # Required for async benchmarks
 ```
 
-By default, `bench_matrix` includes Criterion integration. The core logic for parameter generation is available even without it, but its primary utility shines with Criterion. The `criterion_integration` feature is enabled by default.
+The `criterion_integration` feature is enabled by default.
 
-## Getting Started / Documentation
+## Documentation
 
-For a detailed guide on how to use `bench_matrix`, including core concepts, API overview, and examples, please see the **[Usage Guide](./README.USAGE.md)**.
-
-Example benchmark suites demonstrating various features can be found in the `benches/` directory of the project (e.g., `benches/async.rs`, `benches/sync.rs`).
-
-For the full API reference, please visit [docs.rs/bench_matrix](https://docs.rs/bench_matrix/latest/bench_matrix/).
+*   **[Usage Guide](./README.USAGE.md):** A comprehensive guide on concepts, API, and examples. **Start here!**
+*   **[API Reference (docs.rs):](https://docs.rs/bench_matrix/latest/bench_matrix/)** Detailed documentation for every public type and function.
+*   **[Examples (`benches/` directory):](https://github.com/excsn/bench_matrix/tree/main/benches)** Fully working examples demonstrating synchronous and asynchronous suites.
