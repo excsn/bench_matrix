@@ -1,4 +1,4 @@
-### `bench_matrix` API Reference (Updated)
+# `bench_matrix` API Reference
 
 ## 1. Introduction / Core Concepts
 
@@ -50,7 +50,20 @@ This reference is organized by the public modules of the `bench_matrix` crate.
 
 These are items re-exported at the top level of the `bench_matrix` crate for convenience.
 
-**(The Type Alias sections remain largely the same as they describe the function signatures, so they are omitted here for brevity. They are still correct.)**
+**Common Type Aliases:**
+*   `pub type ExtractorFn<Cfg, ExtErr = String> = Box<dyn Fn(&AbstractCombination) -> Result<Cfg, ExtErr>>;`
+*   `pub type GlobalSetupFn<Cfg> = Box<dyn FnMut(&Cfg) -> Result<(), String>>;`
+*   `pub type GlobalTeardownFn<Cfg> = Box<dyn FnMut(&Cfg) -> Result<(), String>>;`
+
+**Async Suite Type Aliases:**
+*   `pub type AsyncSetupFn<S, Cfg, CtxT, SetupErr = String> = fn(&Runtime, &Cfg) -> Pin<Box<dyn Future<Output = Result<(CtxT, S), SetupErr>> + Send>>;`
+*   `pub type AsyncBenchmarkLogicFn<S, Cfg, CtxT> = fn(CtxT, S, &Cfg) -> Pin<Box<dyn Future<Output = (CtxT, S, Duration)> + Send>>;`
+*   `pub type AsyncTeardownFn<S, Cfg, CtxT> = fn(CtxT, S, &Runtime, &Cfg) -> Pin<Box<dyn Future<Output = ()> + Send>>;`
+
+**Sync Suite Type Aliases:**
+*   `pub type SyncSetupFn<S, Cfg, CtxT, SetupErr = String> = fn(&Cfg) -> Result<(CtxT, S), SetupErr>;`
+*   `pub type SyncBenchmarkLogicFn<S, Cfg, CtxT> = fn(CtxT, S, &Cfg) -> (CtxT, S, Duration);`
+*   `pub type SyncTeardownFn<S, Cfg, CtxT> = fn(CtxT, S, &Cfg) -> ();`
 
 **Structs (Async Suite Specific):**
 
@@ -95,11 +108,15 @@ Represents one specific combination of abstract parameter values.
     *   `pub cells: Vec<MatrixCellValue>`
 *   **Public Methods:**
     *   `pub fn id_suffix(&self) -> String`
-        *   Generates a string suffix for benchmark IDs (e.g., `_Value1_Value2`).
+        *   Generates a string suffix for benchmark IDs (e.g., `_StdTokio_Uint4096_Booltrue`). For `String` values, it sanitizes non-alphanumeric characters to underscores.
     *   `pub fn id_suffix_with_names(&self, param_names: &[String]) -> String`
-        *   Generates a descriptive string suffix, incorporating parameter names (e.g., `_ParamName1-Value1_ParamName2-Value2`).
-    *   `pub fn get_tag(...)`, `get_string(...)`, `get_i64(...)`, `get_u64(...)`, `get_bool(...)`
-        *   Helpers to get a cell by index and interpret it as a specific type.
+        *   Generates a descriptive string suffix, incorporating parameter names (e.g., `_Backend-Uring_BlockSize-512`). If the length of `param_names` does not match the number of cells, it prints a warning and falls back to `id_suffix()`.
+    *   `pub fn get_tag(&self, index: usize) -> Result<&str, String>`
+    *   `pub fn get_string(&self, index: usize) -> Result<&str, String>`
+    *   `pub fn get_i64(&self, index: usize) -> Result<i64, String>`
+    *   `pub fn get_u64(&self, index: usize) -> Result<u64, String>`
+    *   `pub fn get_bool(&self, index: usize) -> Result<bool, String>`
+        *   Helpers to get a cell by index and interpret it as a specific type. Returns a `Result` to handle index-out-of-bounds or type mismatch errors.
 
 ---
 
@@ -141,18 +158,18 @@ Orchestrates a suite of synchronous benchmarks.
 *   **Signature:**
     `pub struct SyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr = String, SetupErr = String>`
 *   **Public Methods:**
-    *   `pub fn new(...) -> Self`
-        *   Constructs a new `SyncBenchmarkSuite`.
+    *   `pub fn new(criterion: &'s mut Criterion<WallTime>, suite_base_name: String, parameter_names: Option<Vec<String>>, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: SyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: SyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: SyncTeardownFn<S, Cfg, CtxT>) -> Self`
+        *   Constructs a new `SyncBenchmarkSuite`. All parameters are required to build the suite.
     *   `pub fn parameter_names(self, names: Vec<String>) -> Self`
         *   Builder method to set or override the parameter names.
-    *   `pub fn global_setup(self, f: ...) -> Self`
-        *   Sets the global setup function.
-    *   `pub fn global_teardown(self, f: ...) -> Self`
+    *   `pub fn global_setup(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
+        *   Sets the global setup function, a closure that runs once per unique concrete configuration (`Cfg`).
+    *   `pub fn global_teardown(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
         *   Sets the global teardown function.
-    *   `pub fn configure_criterion_group(self, f: ...) -> Self`
-        *   Provides a closure to customize the `criterion::BenchmarkGroup`.
-    *   `pub fn throughput(self, f: ...) -> Self`
-        *   Provides a closure to calculate `criterion::Throughput` for each benchmark variant.
+    *   `pub fn configure_criterion_group(self, f: impl for<'g> Fn(&mut BenchmarkGroup<'g, WallTime>) + 'static) -> Self`
+        *   Provides a closure to customize the `criterion::BenchmarkGroup` (e.g., to set plot configurations, sample sizes, etc.).
+    *   `pub fn throughput(self, f: impl Fn(&Cfg) -> Throughput + 'static) -> Self`
+        *   Provides a closure to calculate `criterion::Throughput` for each benchmark variant based on its concrete configuration `Cfg`.
     *   `pub fn run(mut self)`
         *   Executes the benchmark suite. This creates a single benchmark group (named `suite_base_name`) and registers each parameter combination as a benchmark within it.
 
@@ -169,17 +186,17 @@ Orchestrates a suite of asynchronous benchmarks.
 *   **Signature:**
     `pub struct AsyncBenchmarkSuite<'s, S, Cfg, CtxT, ExtErr = String, SetupErr = String>`
 *   **Public Methods:**
-    *   `pub fn new(...) -> Self`
-        *   Constructs a new `AsyncBenchmarkSuite`. Requires a reference to a Tokio `Runtime`.
+    *   `pub fn new(criterion: &'s mut Criterion<WallTime>, runtime: &'s Runtime, suite_base_name: String, parameter_names: Option<Vec<String>>, parameter_axes: Vec<Vec<MatrixCellValue>>, extractor_fn: ExtractorFn<Cfg, ExtErr>, setup_fn: AsyncSetupFn<S, Cfg, CtxT, SetupErr>, benchmark_logic_fn: AsyncBenchmarkLogicFn<S, Cfg, CtxT>, teardown_fn: AsyncTeardownFn<S, Cfg, CtxT>) -> Self`
+        *   Constructs a new `AsyncBenchmarkSuite`. Requires a reference to a Tokio `Runtime` in addition to the parameters required by the sync suite.
     *   `pub fn parameter_names(self, names: Vec<String>) -> Self`
         *   Builder method to set or override the parameter names.
-    *   `pub fn global_setup(self, f: ...) -> Self`
+    *   `pub fn global_setup(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
         *   Sets the global setup function.
-    *   `pub fn global_teardown(self, f: ...) -> Self`
+    *   `pub fn global_teardown(self, f: impl FnMut(&Cfg) -> Result<(), String> + 'static) -> Self`
         *   Sets the global teardown function.
-    *   `pub fn configure_criterion_group(self, f: ...) -> Self`
+    *   `pub fn configure_criterion_group(self, f: impl for<'g> Fn(&mut BenchmarkGroup<'g, WallTime>) + 'static) -> Self`
         *   Provides a closure to customize the `criterion::BenchmarkGroup`.
-    *   `pub fn throughput(self, f: ...) -> Self`
+    *   `pub fn throughput(self, f: impl Fn(&Cfg) -> Throughput + 'static) -> Self`
         *   Provides a closure to calculate `criterion::Throughput` for each benchmark variant.
     *   `pub fn run(mut self)`
         *   Executes the asynchronous benchmark suite, creating a single benchmark group and registering each parameter combination as a benchmark within it.
