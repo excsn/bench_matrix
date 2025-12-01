@@ -73,7 +73,7 @@ fn async_setup_fn(
   Box::pin(async move {
     tokio::time::sleep(Duration::from_micros(10)).await;
     let mut local_rng = StdRng::from_os_rng();
-    let data_packet = (0..cfg_clone.packet_size).map(|_| local_rng.gen::<u8>()).collect();
+    let data_packet = (0..cfg_clone.packet_size).map(|_| local_rng.random::<u8>()).collect();
     let simulated_connections = (0..cfg_clone.concurrent_ops)
       .map(|i| format!("conn-{}-{:?}-{}", i, cfg_clone.workload, cfg_clone.packet_size))
       .collect();

@@ -1,7 +1,6 @@
 #![cfg(feature = "criterion_integration")]
 
 use crate::params::AbstractCombination;
-use std::fmt::Debug;
 
 // --- Common User-Provided Function Signature Types ---
 // These are types that might be used by both async and sync suites,

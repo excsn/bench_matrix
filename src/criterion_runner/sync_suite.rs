@@ -176,7 +176,7 @@ where
       let teardown_fn_ptr = self.teardown_fn;
 
       // Use `bench_with_input` to create a configurable benchmark.
-      let mut bench_registration = group.bench_with_input(bench_id, &concrete_config, 
+      let bench_registration = group.bench_with_input(bench_id, &concrete_config, 
         move |b: &mut Bencher<'_, WallTime>, cfg: &Cfg| {
           b.iter_custom(|iters_count_hint| {
             // The `cfg` from the closure is the specific config for this benchmark run.

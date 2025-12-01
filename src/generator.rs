@@ -106,7 +106,7 @@ impl<'a> ExactSizeIterator for CombinationIterator<'a> {
 /// A `CombinationIterator` that will lazily yield all generated combinations.
 /// If the input `axes` slice is empty or if any of the individual axes are empty,
 /// the returned iterator will be empty (i.e., its `.len()` will be 0).
-pub fn generate_combinations(axes: &[Vec<MatrixCellValue>]) -> CombinationIterator {
+pub fn generate_combinations(axes: &[Vec<MatrixCellValue>]) -> CombinationIterator<'_> {
   // The length of a Cartesian product is the product of the lengths of the input sets.
   // If any set is empty, the entire product is empty.
   let len = if axes.iter().any(Vec::is_empty) {

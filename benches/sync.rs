@@ -1,5 +1,3 @@
-// benches/sync_example.rs
-
 use bench_matrix::{
   criterion_runner::sync_suite::SyncBenchmarkSuite,
   AbstractCombination, MatrixCellValue,
